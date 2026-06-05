@@ -1,0 +1,12 @@
+﻿                  FloatingActionButton(
+                    mini: true,
+                    backgroundColor: Colors.grey[900],
+                    child: const Icon(Icons.analytics, color: Colors.white),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const AnalyticsPage()),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),

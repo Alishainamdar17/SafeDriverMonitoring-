@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "518933110924",
+    "project_id": "driversafemode",
+    "storage_bucket": "driversafemode.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:518933110924:android:01433f254041ef292c5ba9",
+        "android_client_info": {
+          "package_name": "com.example.safe_drive_monitor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBgVdvlr7iwNTVHSj_SuCAdrkWd5PJOerw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

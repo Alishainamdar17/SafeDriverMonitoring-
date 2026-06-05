@@ -1,0 +1,76 @@
+﻿name: safe_drive_monitor
+description: A mobile app to help monitor driving habits
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  firebase_core: ^4.0.0
+  firebase_auth: ^6.0.0
+  cloud_firestore: ^6.0.0
+
+
+  # ── Location & Sensors ─────────────────────────────────────────────────────
+  geolocator: ^14.0.2
+  sensors_plus: ^6.1.1
+
+  # ── Database ───────────────────────────────────────────────────────────────
+  sqflite: ^2.4.1
+  path: ^1.9.0
+
+  # ── State / Prefs ──────────────────────────────────────────────────────────
+  provider: ^6.1.2
+  shared_preferences: ^2.3.0
+
+  # ── Networking / Utils ─────────────────────────────────────────────────────
+  url_launcher: ^6.3.1
+  televerse: ^2.1.1
+  flutter_dotenv: ^5.2.1
+
+  # ── Charts ─────────────────────────────────────────────────────────────────
+  fl_chart: ^1.2.0
+
+  # ── Camera & Permissions ───────────────────────────────────────────────────
+  camera: ^0.10.5
+  permission_handler: ^11.3.1
+
+  # ── AI / ML ────────────────────────────────────────────────────────────────
+  google_mlkit_face_detection: ^0.10.0
+  image_picker: ^1.0.4
+
+  # ── Maps ───────────────────────────────────────────────────────────────────
+  flutter_map: ^8.3.0
+  latlong2: ^0.9.1
+  flutter_tts: ^4.0.0
+
+  # ── Audio — ambulance siren (eye_detection_service.dart) ──────────────────
+  # audioplayers plays assets/sounds/ambulance_siren.mp3 via AssetSource
+  audioplayers: 5.2.1
+
+  # ── Notifications ──────────────────────────────────────────────────────────
+  flutter_local_notifications: ^18.0.0
+
+  # NOTE: flutter_tts and flutter_ringtone_player REMOVED.
+  # dashboard_page.dart uses MethodChannel('safe_drive_monitor/siren')
+  # which calls Android RingtoneManager natively — no extra package needed.
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - .env
+    # ── Ambulance siren audio file ────────────────────────────────────────────
+    # Place your MP3 at:  assets/sounds/ambulance_siren.mp3
+    # Create the folder:  mkdir -p assets/sounds
+    # Then add the file and run: flutter pub get
+    - assets/sounds/ambulance_siren.mp3
