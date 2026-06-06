@@ -234,6 +234,27 @@ Please make sure your code follows Flutter's best practices and is properly test
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
 ---
+# 🚗 Safe Driver Monitoring App
+
+A Flutter-based mobile application that monitors 
+driver behavior in real-time to enhance road safety.
+
+## 🛠️ Tech Stack
+- Flutter / Dart
+- Accelerometer & GPS Sensors
+- Node.js Backend
+- MongoDB Database
+
+## ✨ Features
+- Real-time driver behavior monitoring
+- Harsh braking & acceleration detection
+- Instant safety alerts
+- Trip history & analytics
+
+## 🚀 How to Run
+1. Clone the repo
+2. Run `flutter pub get`
+3. Run `flutter run`
 
 ## 📬 Contact
 
