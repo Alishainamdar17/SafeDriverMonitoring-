@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:safe_drive_monitor/services/live_drive_state.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // for Timestamp
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class DriveHistoryPage extends StatefulWidget {
   const DriveHistoryPage({super.key});
@@ -20,6 +20,9 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
 
   List<Map<String, dynamic>> _firebaseHistory = [];
   bool _loading = true;
+
+  // ✅ FIXED: same collection as live_drive_state.dart
+  static const String _kCollection = 'live_drives';
 
   @override
   void initState() {
@@ -41,14 +44,16 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
       return;
     }
     try {
+      // ✅ FIXED: correct collection + userId filter
       final snap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .collection('drives')
+          .collection(_kCollection)
+          .where('userId', isEqualTo: uid)
           .where('status', isEqualTo: 'completed')
           .orderBy('startTime', descending: true)
           .limit(50)
           .get();
+
+      debugPrint('✅ DriveHistory: ${snap.docs.length} docs found');
 
       setState(() {
         _firebaseHistory = snap.docs.map((d) {
@@ -111,17 +116,34 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
     return 'D';
   }
 
-  // Firebase doc se safety score nikaalte hain
+  // ✅ FIXED: safe int cast — handles both int and double from Firestore
+  int _safeInt(dynamic v) {
+    if (v == null) return 0;
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    return 0;
+  }
+
+  int _foldEventMap(dynamic raw) {
+    if (raw == null) return 0;
+    if (raw is int) return raw;
+    if (raw is Map) {
+      return raw.values.fold<int>(0, (s, v) => s + _safeInt(v));
+    }
+    return 0;
+  }
+
   double _calcScore(Map<String, dynamic> doc) {
+    // ✅ FIXED: use safetyScore from Firestore if present
+    final saved = (doc['safetyScore'] as num?)?.toDouble() ?? 0;
+    if (saved > 0) return saved;
+
+    // Fallback: recalculate
+    final brakes     = _foldEventMap(doc['suddenBrakings']);
+    final accels     = _foldEventMap(doc['suddenAccelerations']);
+    final turns      = _foldEventMap(doc['sharpTurns']);
+    final overspeeds = _safeInt(doc['overSpeedDurationSeconds']) ~/ 30;
     double score = 100;
-    final brakes = (doc['suddenBrakings'] as Map?)?.values
-            .fold<int>(0, (s, v) => s + (v as int)) ?? 0;
-    final accels = (doc['suddenAccelerations'] as Map?)?.values
-            .fold<int>(0, (s, v) => s + (v as int)) ?? 0;
-    final turns = (doc['sharpTurns'] as Map?)?.values
-            .fold<int>(0, (s, v) => s + (v as int)) ?? 0;
-    final overspeeds =
-        ((doc['overSpeedDurationSeconds'] as num?)?.toInt() ?? 0) ~/ 30;
     score -= brakes * 5;
     score -= accels * 3;
     score -= turns * 4;
@@ -129,9 +151,18 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
     return score.clamp(0.0, 100.0);
   }
 
+  // ✅ FIXED: use distanceKm field first, fallback to speed*time calc
+  double _calcDist(Map<String, dynamic> doc) {
+    final saved = (doc['distanceKm'] as num?)?.toDouble() ?? 0;
+    if (saved > 0) return saved;
+    final speed = (doc['averageSpeed'] as num?)?.toDouble() ?? 0;
+    final secs  = (doc['durationSeconds'] as num?)?.toDouble() ?? 0;
+    return (speed * secs) / 3600;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final current = _state.current;
+    final current   = _state.current;
     final totalTrips = _firebaseHistory.length + _state.history.length;
 
     return Scaffold(
@@ -160,13 +191,10 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
                               padding:
                                   const EdgeInsets.fromLTRB(16, 8, 16, 24),
                               children: [
-                                // Live session
                                 if (current != null)
                                   _buildCurrentSessionCard(current),
-                                // In-memory completed sessions
                                 ..._state.history.map(
                                     (s) => _buildMemoryCard(s)),
-                                // Firebase sessions
                                 if (_firebaseHistory.isNotEmpty) ...[
                                   if (_state.history.isNotEmpty)
                                     _buildDividerLabel('PREVIOUS TRIPS'),
@@ -269,27 +297,20 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
   }
 
   Widget _buildSummaryStrip() {
-    // Firebase se bhi totals nikaalte hain
     double fbDistance = 0;
-    int fbSeconds = 0;
+    int fbSeconds     = 0;
     double fbScoreSum = 0;
 
     for (final doc in _firebaseHistory) {
-      fbDistance +=
-          ((doc['averageSpeed'] as num?)?.toDouble() ?? 0) *
-              ((doc['durationSeconds'] as num?)?.toDouble() ?? 0) /
-              3600;
-      fbSeconds += (doc['durationSeconds'] as num?)?.toInt() ?? 0;
+      fbDistance += _calcDist(doc);
+      fbSeconds  += _safeInt(doc['durationSeconds']);
       fbScoreSum += _calcScore(doc);
     }
 
-    final totalDistKm =
-        _state.totalDistanceKm + fbDistance;
-    final totalSecs =
-        _state.totalDriveTime.inSeconds + fbSeconds;
-    final totalTrips =
-        _state.totalTrips + _firebaseHistory.length;
-    final avgScore = totalTrips > 0
+    final totalDistKm = _state.totalDistanceKm + fbDistance;
+    final totalSecs   = _state.totalDriveTime.inSeconds + fbSeconds;
+    final totalTrips  = _state.totalTrips + _firebaseHistory.length;
+    final avgScore    = totalTrips > 0
         ? ((_state.allTimeAvgScore * _state.totalTrips) + fbScoreSum) /
             totalTrips
         : 0.0;
@@ -359,8 +380,9 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
 
   // ── FIREBASE CARD ──────────────────────────────────────────────────────────
   Widget _buildFirebaseCard(Map<String, dynamic> doc) {
-    final score = _calcScore(doc);
-    final color = _scoreColor(score);
+    final score    = _calcScore(doc);
+    final distKm   = _calcDist(doc);
+    final color    = _scoreColor(score);
     final gradeStr = _grade(score);
 
     DateTime? startTime;
@@ -370,14 +392,10 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
       else if (ts is String) startTime = DateTime.tryParse(ts);
     } catch (_) {}
 
-    final durationSec = (doc['durationSeconds'] as num?)?.toInt() ?? 0;
-    final avgSpeed = (doc['averageSpeed'] as num?)?.toDouble() ?? 0;
-    final distKm = avgSpeed * durationSec / 3600;
-
-    final brakes = (doc['suddenBrakings'] as Map?)?.values
-            .fold<int>(0, (s, v) => s + (v as int)) ?? 0;
-    final overspeeds =
-        ((doc['overSpeedDurationSeconds'] as num?)?.toInt() ?? 0) ~/ 30;
+    final durationSec = _safeInt(doc['durationSeconds']);
+    final avgSpeed    = (doc['averageSpeed'] as num?)?.toDouble() ?? 0;
+    final brakes      = _foldEventMap(doc['suddenBrakings']);
+    final overspeeds  = _safeInt(doc['overSpeedDurationSeconds']) ~/ 30;
 
     return GestureDetector(
       onTap: () => _showFirebaseDetail(doc, score, gradeStr),
@@ -392,8 +410,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
         child: Column(children: [
           Row(children: [
             Container(
-              width: 48,
-              height: 48,
+              width: 48, height: 48,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: color.withOpacity(0.1),
@@ -402,9 +419,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
               child: Center(
                 child: Text(gradeStr,
                     style: TextStyle(
-                      color: color,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w900,
+                      color: color, fontSize: 16, fontWeight: FontWeight.w900,
                       fontFamily: 'monospace',
                     )),
               ),
@@ -414,11 +429,15 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Firebase Trip',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600)),
+                    Text(
+                      (doc['startLocation'] as String?)?.isNotEmpty == true
+                          ? doc['startLocation'] as String
+                          : 'Drive Trip',
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 11,
+                          fontWeight: FontWeight.w600),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     const SizedBox(height: 3),
                     Text(
                       startTime != null
@@ -432,14 +451,11 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
             Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
               Text('${score.toInt()}',
                   style: TextStyle(
-                    color: color,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
+                    color: color, fontSize: 22, fontWeight: FontWeight.w900,
                     fontFamily: 'monospace',
                   )),
               const Text('/100',
-                  style:
-                      TextStyle(color: Color(0xFF636366), fontSize: 9)),
+                  style: TextStyle(color: Color(0xFF636366), fontSize: 9)),
             ]),
           ]),
           const SizedBox(height: 12),
@@ -474,18 +490,14 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
 
   void _showFirebaseDetail(
       Map<String, dynamic> doc, double score, String gradeStr) {
-    final color = _scoreColor(score);
-    final durationSec = (doc['durationSeconds'] as num?)?.toInt() ?? 0;
-    final avgSpeed = (doc['averageSpeed'] as num?)?.toDouble() ?? 0;
-    final distKm = avgSpeed * durationSec / 3600;
-    final brakes = (doc['suddenBrakings'] as Map?)?.values
-            .fold<int>(0, (s, v) => s + (v as int)) ?? 0;
-    final accels = (doc['suddenAccelerations'] as Map?)?.values
-            .fold<int>(0, (s, v) => s + (v as int)) ?? 0;
-    final turns = (doc['sharpTurns'] as Map?)?.values
-            .fold<int>(0, (s, v) => s + (v as int)) ?? 0;
-    final overspeeds =
-        ((doc['overSpeedDurationSeconds'] as num?)?.toInt() ?? 0) ~/ 30;
+    final color       = _scoreColor(score);
+    final durationSec = _safeInt(doc['durationSeconds']);
+    final distKm      = _calcDist(doc);
+    final avgSpeed    = (doc['averageSpeed'] as num?)?.toDouble() ?? 0;
+    final brakes      = _foldEventMap(doc['suddenBrakings']);
+    final accels      = _foldEventMap(doc['suddenAccelerations']);
+    final turns       = _foldEventMap(doc['sharpTurns']);
+    final overspeeds  = _safeInt(doc['overSpeedDurationSeconds']) ~/ 30;
 
     showModalBottomSheet(
       context: context,
@@ -500,11 +512,9 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
         ),
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
-          child:
-              Column(mainAxisSize: MainAxisSize.min, children: [
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
-                width: 40,
-                height: 4,
+                width: 40, height: 4,
                 decoration: BoxDecoration(
                     color: Colors.grey[700],
                     borderRadius: BorderRadius.circular(2))),
@@ -514,16 +524,13 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
               const SizedBox(width: 8),
               const Text('TRIP DETAIL',
                   style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5)),
+                      color: Colors.white, fontSize: 15,
+                      fontWeight: FontWeight.w800, letterSpacing: 1.5)),
             ]),
             const SizedBox(height: 20),
             Row(mainAxisAlignment: MainAxisAlignment.center, children: [
               Container(
-                width: 72,
-                height: 72,
+                width: 72, height: 72,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: color.withOpacity(0.1),
@@ -532,29 +539,26 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
                 child: Center(
                     child: Text(gradeStr,
                         style: TextStyle(
-                            color: color,
-                            fontSize: 26,
+                            color: color, fontSize: 26,
                             fontWeight: FontWeight.w900))),
               ),
               const SizedBox(width: 20),
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('${score.toInt()}/100',
                     style: TextStyle(
-                        color: color,
-                        fontSize: 30,
+                        color: color, fontSize: 30,
                         fontWeight: FontWeight.w900,
                         fontFamily: 'monospace')),
                 Text('Safety Score',
-                    style:
-                        TextStyle(color: Colors.grey[500], fontSize: 12)),
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12)),
               ]),
             ]),
             const SizedBox(height: 18),
             _detailRow('Duration', _fmtDuration(durationSec),
                 Icons.timer_rounded, const Color(0xFF5E5CE6)),
             const SizedBox(height: 8),
-            _detailRow('Distance', _fmtDist(distKm), Icons.route_rounded,
-                const Color(0xFF00D4FF)),
+            _detailRow('Distance', _fmtDist(distKm),
+                Icons.route_rounded, const Color(0xFF00D4FF)),
             const SizedBox(height: 8),
             _detailRow('Avg Speed', '${avgSpeed.toStringAsFixed(1)} km/h',
                 Icons.speed_rounded, const Color(0xFF34C759)),
@@ -563,10 +567,8 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
               alignment: Alignment.centerLeft,
               child: Text('EVENTS',
                   style: TextStyle(
-                      color: Color(0xFF636366),
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 1.5)),
+                      color: Color(0xFF636366), fontSize: 10,
+                      fontWeight: FontWeight.w700, letterSpacing: 1.5)),
             ),
             const SizedBox(height: 10),
             Row(children: [
@@ -595,8 +597,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
                 onPressed: () => Navigator.pop(context),
                 child: const Text('Close',
                     style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
+                        color: Colors.white, fontSize: 15,
                         fontWeight: FontWeight.w700)),
               ),
             ),
@@ -607,7 +608,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
     );
   }
 
-  // ── LIVE SESSION CARD (in-memory) ──────────────────────────────────────────
+  // ── LIVE SESSION CARD ──────────────────────────────────────────────────────
   Widget _buildCurrentSessionCard(LiveDriveSession session) {
     return GestureDetector(
       onTap: () => _showMemoryDetail(session, isCurrent: true),
@@ -623,57 +624,46 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
         child: Column(children: [
           Row(children: [
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 color: const Color(0xFF34C759).withOpacity(0.15),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Row(children: [
                 Container(
-                  width: 6,
-                  height: 6,
+                  width: 6, height: 6,
                   decoration: const BoxDecoration(
-                    color: Color(0xFF34C759),
-                    shape: BoxShape.circle,
-                  ),
+                    color: Color(0xFF34C759), shape: BoxShape.circle),
                 ),
                 const SizedBox(width: 6),
                 const Text('LIVE NOW',
                     style: TextStyle(
-                      color: Color(0xFF34C759),
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1,
+                      color: Color(0xFF34C759), fontSize: 10,
+                      fontWeight: FontWeight.w800, letterSpacing: 1,
                     )),
               ]),
             ),
             const Spacer(),
             Text('${session.safetyScore.toInt()}',
                 style: const TextStyle(
-                  color: Color(0xFF34C759),
-                  fontSize: 22,
-                  fontWeight: FontWeight.w900,
-                  fontFamily: 'monospace',
+                  color: Color(0xFF34C759), fontSize: 22,
+                  fontWeight: FontWeight.w900, fontFamily: 'monospace',
                 )),
           ]),
           const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _miniStat(Icons.route_rounded,
-                  _fmtDist(session.distanceKm), const Color(0xFF00D4FF)),
-              _miniStat(Icons.timer_rounded,
-                  _fmtDurationSec(session.duration.inSeconds),
-                  const Color(0xFF5E5CE6)),
-              _miniStat(Icons.speed_rounded,
-                  '${session.avgSpeed.toStringAsFixed(0)} km/h',
-                  const Color(0xFF34C759)),
-              _miniStat(Icons.flash_on_rounded,
-                  '${session.maxSpeed.toStringAsFixed(0)} km/h',
-                  const Color(0xFFFF9F0A)),
-            ],
-          ),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+            _miniStat(Icons.route_rounded,
+                _fmtDist(session.distanceKm), const Color(0xFF00D4FF)),
+            _miniStat(Icons.timer_rounded,
+                _fmtDurationSec(session.duration.inSeconds),
+                const Color(0xFF5E5CE6)),
+            _miniStat(Icons.speed_rounded,
+                '${session.avgSpeed.toStringAsFixed(0)} km/h',
+                const Color(0xFF34C759)),
+            _miniStat(Icons.flash_on_rounded,
+                '${session.maxSpeed.toStringAsFixed(0)} km/h',
+                const Color(0xFFFF9F0A)),
+          ]),
         ]),
       ),
     );
@@ -694,8 +684,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
         child: Column(children: [
           Row(children: [
             Container(
-              width: 48,
-              height: 48,
+              width: 48, height: 48,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: color.withOpacity(0.1),
@@ -704,8 +693,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
               child: Center(
                   child: Text(session.grade,
                       style: TextStyle(
-                          color: color,
-                          fontSize: 16,
+                          color: color, fontSize: 16,
                           fontWeight: FontWeight.w900))),
             ),
             const SizedBox(width: 12),
@@ -718,8 +706,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
                           ? session.startLocation
                           : 'Recent Trip',
                       style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
+                          color: Colors.white, fontSize: 11,
                           fontWeight: FontWeight.w600),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -730,10 +717,8 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
             ),
             Text('${session.safetyScore.toInt()}',
                 style: TextStyle(
-                    color: color,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    fontFamily: 'monospace')),
+                    color: color, fontSize: 22,
+                    fontWeight: FontWeight.w900, fontFamily: 'monospace')),
           ]),
           const SizedBox(height: 12),
           Container(height: 1, color: const Color(0xFF1C1C2E)),
@@ -756,8 +741,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
     );
   }
 
-  void _showMemoryDetail(LiveDriveSession session,
-      {required bool isCurrent}) {
+  void _showMemoryDetail(LiveDriveSession session, {required bool isCurrent}) {
     final color = isCurrent
         ? const Color(0xFF34C759)
         : _scoreColor(session.safetyScore);
@@ -774,11 +758,9 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
         ),
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
-          child:
-              Column(mainAxisSize: MainAxisSize.min, children: [
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
-                width: 40,
-                height: 4,
+                width: 40, height: 4,
                 decoration: BoxDecoration(
                     color: Colors.grey[700],
                     borderRadius: BorderRadius.circular(2))),
@@ -788,21 +770,17 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
                   isCurrent
                       ? Icons.radio_button_checked
                       : Icons.summarize_rounded,
-                  color: color,
-                  size: 18),
+                  color: color, size: 18),
               const SizedBox(width: 8),
               Text(isCurrent ? 'LIVE TRIP' : 'TRIP DETAIL',
                   style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5)),
+                      color: Colors.white, fontSize: 15,
+                      fontWeight: FontWeight.w800, letterSpacing: 1.5)),
             ]),
             const SizedBox(height: 20),
             Row(mainAxisAlignment: MainAxisAlignment.center, children: [
               Container(
-                width: 72,
-                height: 72,
+                width: 72, height: 72,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: color.withOpacity(0.1),
@@ -819,13 +797,11 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('${session.safetyScore.toInt()}/100',
                     style: TextStyle(
-                        color: color,
-                        fontSize: 30,
+                        color: color, fontSize: 30,
                         fontWeight: FontWeight.w900,
                         fontFamily: 'monospace')),
                 Text('Safety Score',
-                    style:
-                        TextStyle(color: Colors.grey[500], fontSize: 12)),
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12)),
               ]),
             ]),
             const SizedBox(height: 18),
@@ -848,10 +824,8 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
               alignment: Alignment.centerLeft,
               child: Text('EVENTS',
                   style: TextStyle(
-                      color: Color(0xFF636366),
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 1.5)),
+                      color: Color(0xFF636366), fontSize: 10,
+                      fontWeight: FontWeight.w700, letterSpacing: 1.5)),
             ),
             const SizedBox(height: 10),
             Row(children: [
@@ -880,8 +854,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
                 onPressed: () => Navigator.pop(context),
                 child: const Text('Close',
                     style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
+                        color: Colors.white, fontSize: 15,
                         fontWeight: FontWeight.w700)),
               ),
             ),
@@ -905,10 +878,8 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
       const SizedBox(height: 4),
       Text(value,
           style: const TextStyle(
-            color: Colors.white,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            fontFamily: 'monospace',
+            color: Colors.white, fontSize: 11,
+            fontWeight: FontWeight.w700, fontFamily: 'monospace',
           )),
     ]);
   }
@@ -923,10 +894,8 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
       ),
       child: Text(text,
           style: TextStyle(
-              color: color,
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.3)),
+              color: color, fontSize: 9,
+              fontWeight: FontWeight.w700, letterSpacing: 0.3)),
     );
   }
 
@@ -937,8 +906,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
         const SizedBox(height: 14),
         Text('No drives yet',
             style: TextStyle(
-                color: Colors.grey[600],
-                fontSize: 15,
+                color: Colors.grey[600], fontSize: 15,
                 fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
         Text('Start driving to record your first trip',
@@ -964,10 +932,8 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
         const Spacer(),
         Text(value,
             style: const TextStyle(
-                color: Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                fontFamily: 'monospace')),
+                color: Colors.white, fontSize: 13,
+                fontWeight: FontWeight.w700, fontFamily: 'monospace')),
       ]),
     );
   }
@@ -979,14 +945,10 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
         decoration: BoxDecoration(
-          color: has
-              ? color.withOpacity(0.08)
-              : const Color(0xFF0F0F18),
+          color: has ? color.withOpacity(0.08) : const Color(0xFF0F0F18),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-              color: has
-                  ? color.withOpacity(0.3)
-                  : const Color(0xFF1C1C2E),
+              color: has ? color.withOpacity(0.3) : const Color(0xFF1C1C2E),
               width: 1),
         ),
         child: Column(children: [
@@ -996,8 +958,7 @@ class _DriveHistoryPageState extends State<DriveHistoryPage>
           Text('$count',
               style: TextStyle(
                   color: has ? color : Colors.grey[700],
-                  fontSize: 18,
-                  fontWeight: FontWeight.w900,
+                  fontSize: 18, fontWeight: FontWeight.w900,
                   fontFamily: 'monospace')),
           const SizedBox(height: 2),
           Text(label,
