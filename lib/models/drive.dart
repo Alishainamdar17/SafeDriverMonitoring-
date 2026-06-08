@@ -7,7 +7,7 @@ class LocationPoint {
   final double speed; // ← added
 
   const LocationPoint({
-    required this.latitude,
+    required this.latitude, 
     required this.longitude,
     required this.timestamp,
     this.speed = 0.0, // default so old call-sites without speed still compile
